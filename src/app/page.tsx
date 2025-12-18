@@ -1,17 +1,28 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import toast, { Toaster } from "react-hot-toast";
 
 interface Message {
 	id: string;
 	role: "user" | "assistant" | "status" | "error";
 	content: string;
+	timestamp?: number;
 }
 
 interface Settings {
 	model: string;
 	tone: string;
+	language: string;
 }
+
+const SUGGESTED_MESSAGES = [
+	"What products do you have?",
+	"I need help with my order",
+	"What's your return policy?",
+	"Do you have monitors in stock?",
+	"I need technical support",
+];
 
 export default function Home() {
 	const [messages, setMessages] = useState<Message[]>([]);
@@ -22,8 +33,10 @@ export default function Home() {
 	const [settings, setSettings] = useState<Settings>({
 		model: "gpt-5.2",
 		tone: "professional",
+		language: "en",
 	});
 	const messagesEndRef = useRef<HTMLDivElement>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const scrollToBottom = () => {
 		messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -33,14 +46,22 @@ export default function Home() {
 		scrollToBottom();
 	}, [messages]);
 
-	const handleSubmit = async (e: React.FormEvent) => {
-		e.preventDefault();
+	useEffect(() => {
+		if (textareaRef.current) {
+			textareaRef.current.style.height = "auto";
+			textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 150) + "px";
+		}
+	}, [input]);
+
+	const handleSubmit = async (e?: React.FormEvent) => {
+		e?.preventDefault();
 		if (!input.trim() || isLoading) return;
 
 		const userMessage: Message = {
 			id: Date.now().toString(),
 			role: "user",
 			content: input.trim(),
+			timestamp: Date.now(),
 		};
 
 		setMessages((prev) => [...prev, userMessage]);
@@ -51,6 +72,7 @@ export default function Home() {
 			id: (Date.now() + 1).toString(),
 			role: "assistant",
 			content: "",
+			timestamp: Date.now(),
 		};
 		setMessages((prev) => [...prev, assistantMessage]);
 
@@ -65,13 +87,16 @@ export default function Home() {
 					})),
 					model: settings.model,
 					tone: settings.tone,
+					language: settings.language,
 				}),
 			});
 
-			if (!response.ok) throw new Error("Failed to send message");
+			if (!response.ok) {
+				throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+			}
 
 			const reader = response.body?.getReader();
-			if (!reader) throw new Error("No reader");
+			if (!reader) throw new Error("No reader available");
 
 			const decoder = new TextDecoder();
 			let buffer = "";
@@ -99,9 +124,10 @@ export default function Home() {
 						} else if (data.type === "status") {
 							setStatus(data.content);
 						} else if (data.type === "warning") {
-							setStatus(`⚠️ ${data.content}`);
+							toast(data.content, { icon: "⚠️", duration: 4000 });
 						} else if (data.type === "error") {
 							setStatus("");
+							toast.error(data.content, { duration: 6000 });
 							setMessages((prev) =>
 								prev.map((m) =>
 									m.id === assistantMessage.id
@@ -117,6 +143,7 @@ export default function Home() {
 			}
 		} catch (err) {
 			const error = err as Error;
+			toast.error(`Connection failed: ${error.message}`, { duration: 5000 });
 			setMessages((prev) =>
 				prev.map((m) =>
 					m.id === assistantMessage.id
@@ -130,12 +157,43 @@ export default function Home() {
 		}
 	};
 
+	const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+		if (e.key === "Enter" && !e.shiftKey) {
+			e.preventDefault();
+			handleSubmit();
+		}
+	};
+
+	const handleSuggestionClick = (suggestion: string) => {
+		setInput(suggestion);
+		setTimeout(() => handleSubmit(), 0);
+	};
+
 	const clearChat = () => {
 		setMessages([]);
+		toast.success("Chat cleared");
 	};
 
 	return (
 		<div className="h-screen overflow-hidden bg-[#0c0c0c] text-[#e0e0e0] flex">
+			<Toaster
+				position="top-center"
+				toastOptions={{
+					style: {
+						background: "#1a1a1a",
+						color: "#e0e0e0",
+						border: "1px solid #252525",
+						fontSize: "14px",
+					},
+					error: {
+						style: { border: "1px solid #ef4444" },
+					},
+					success: {
+						style: { border: "1px solid #22c55e" },
+					},
+				}}
+			/>
+
 			<div className="flex-1 flex flex-col max-w-3xl mx-auto p-6 h-full">
 				<div className="flex-shrink-0 flex justify-between items-center mb-6">
 					<h1 className="text-lg tracking-tight text-[#888]">techgear support</h1>
@@ -208,31 +266,56 @@ export default function Home() {
 				</div>
 
 				{status && (
-					<div className="flex-shrink-0 mb-2 px-3 py-2 bg-[#1a1a1a] border border-[#252525] rounded-lg">
+					<div className="flex-shrink-0 mb-2 px-3 py-2 bg-[#1a1a1a] border border-[#252525] rounded-lg flex items-center gap-2">
+						<div className="flex gap-1">
+							<span className="w-2 h-2 bg-[#2563eb] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+							<span className="w-2 h-2 bg-[#2563eb] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+							<span className="w-2 h-2 bg-[#2563eb] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+						</div>
 						<p className="text-xs text-[#888]">{status}</p>
 					</div>
 				)}
 
+				{messages.length === 0 && (
+					<div className="flex-shrink-0 mb-3 flex flex-wrap gap-2">
+						{SUGGESTED_MESSAGES.map((suggestion, i) => (
+							<button
+								key={i}
+								onClick={() => handleSuggestionClick(suggestion)}
+								disabled={isLoading}
+								className="px-3 py-2 text-xs bg-[#1a1a1a] border border-[#252525] rounded-lg text-[#888] hover:text-[#e0e0e0] hover:border-[#333] transition-all disabled:opacity-50"
+							>
+								{suggestion}
+							</button>
+						))}
+					</div>
+				)}
+
 				<form onSubmit={handleSubmit} className="flex-shrink-0 relative">
-					<input
-						type="text"
+					<textarea
+						ref={textareaRef}
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
-						placeholder="Type your message..."
+						onKeyDown={handleKeyDown}
+						placeholder="Type your message... (Shift+Enter for new line)"
 						disabled={isLoading}
-						className="w-full py-4 px-5 pr-14 bg-[#1a1a1a] border border-[#252525] rounded-xl text-[#e0e0e0] placeholder-[#555] focus:outline-none focus:border-[#333] transition-colors"
+						rows={1}
+						className="w-full py-4 px-5 pr-14 bg-[#1a1a1a] border border-[#252525] rounded-xl text-[#e0e0e0] placeholder-[#555] focus:outline-none focus:border-[#333] transition-colors resize-none"
 					/>
 					<button
 						type="submit"
 						disabled={!input.trim() || isLoading}
-						className={`absolute right-3 top-1/2 -translate-y-1/2 p-2 rounded-lg transition-all ${
+						className={`absolute right-3 top-4 p-2 rounded-lg transition-all ${
 							!input.trim() || isLoading
 								? "text-[#444] cursor-not-allowed"
 								: "text-[#2563eb] hover:bg-[#252525]"
 						}`}
 					>
 						{isLoading ? (
-							<div className="w-5 h-5 border-2 border-[#444] border-t-[#888] rounded-full animate-spin" />
+							<div className="relative w-5 h-5">
+								<div className="absolute inset-0 border-2 border-[#2563eb]/30 rounded-full" />
+								<div className="absolute inset-0 border-2 border-transparent border-t-[#2563eb] rounded-full animate-spin" />
+							</div>
 						) : (
 							<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
 								<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z" />
@@ -270,6 +353,25 @@ export default function Home() {
 								<option value="professional">Professional</option>
 								<option value="friendly">Friendly</option>
 								<option value="concise">Concise</option>
+							</select>
+						</div>
+
+						<div>
+							<label className="block text-xs text-[#666] mb-2">Language</label>
+							<select
+								value={settings.language}
+								onChange={(e) => setSettings({ ...settings, language: e.target.value })}
+								className="w-full py-2 px-3 bg-[#1a1a1a] border border-[#252525] rounded-lg text-sm text-[#e0e0e0] focus:outline-none focus:border-[#333]"
+							>
+								<option value="en">English</option>
+								<option value="es">Español</option>
+								<option value="fr">Français</option>
+								<option value="de">Deutsch</option>
+								<option value="pt">Português</option>
+								<option value="zh">中文</option>
+								<option value="ja">日本語</option>
+								<option value="ko">한국어</option>
+								<option value="ar">العربية</option>
 							</select>
 						</div>
 

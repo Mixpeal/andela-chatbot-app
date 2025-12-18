@@ -13,6 +13,7 @@ interface ChatRequest {
   messages: Message[];
   model: string;
   tone: string;
+  language: string;
 }
 
 interface McpToolResult {
@@ -84,6 +85,21 @@ function getTonePrompt(tone: string): string {
   return tones[tone] || tones.professional;
 }
 
+function getLanguageName(code: string): string {
+  const languages: Record<string, string> = {
+    en: "English",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    pt: "Portuguese",
+    zh: "Chinese",
+    ja: "Japanese",
+    ko: "Korean",
+    ar: "Arabic",
+  };
+  return languages[code] || "English";
+}
+
 function formatError(source: string, message: string, details?: string): string {
   let formatted = `[${source.toUpperCase()}] ${message}`;
   if (details) formatted += ` - ${details}`;
@@ -120,7 +136,7 @@ export async function POST(request: Request) {
     );
   }
 
-  const { messages, model, tone } = requestBody;
+  const { messages, model, tone, language } = requestBody;
   const openai = new OpenAI({ apiKey });
 
   const stream = new ReadableStream({
@@ -143,9 +159,12 @@ export async function POST(request: Request) {
 
         const openaiTools = convertMcpToolsToOpenAI(mcpTools);
 
+        const languageName = getLanguageName(language);
         const systemPrompt = `You are a helpful customer support agent for TechGear, a company that sells computer products including monitors, printers, keyboards, mice, and other peripherals.
 
 ${getTonePrompt(tone)}
+
+IMPORTANT: Always respond in ${languageName}. The customer prefers ${languageName}.
 
 Your job is to help customers with:
 - Product information and recommendations
