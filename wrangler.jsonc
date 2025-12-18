@@ -36,7 +36,8 @@
 		"enabled": true
 	},
 	"vars": {
-		"MCP_SERVER_URL": "https://vipfapwm3x.us-east-1.awsapprunner.com/mcp"
+		"MCP_SERVER_URL": "https://vipfapwm3x.us-east-1.awsapprunner.com/mcp",
+		"NEXTJS_ENV": "production"
 	}
 	/**
 	 * Smart Placement

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 
 interface Message {
 	id: string;
-	role: "user" | "assistant";
+	role: "user" | "assistant" | "status" | "error";
 	content: string;
 }
 
@@ -18,6 +18,7 @@ export default function Home() {
 	const [input, setInput] = useState("");
 	const [isLoading, setIsLoading] = useState(false);
 	const [showSettings, setShowSettings] = useState(false);
+	const [status, setStatus] = useState<string>("");
 	const [settings, setSettings] = useState<Settings>({
 		model: "gpt-5.2",
 		tone: "professional",
@@ -87,6 +88,7 @@ export default function Home() {
 					if (line.startsWith("data: ")) {
 						const data = JSON.parse(line.slice(6));
 						if (data.type === "content") {
+							setStatus("");
 							setMessages((prev) =>
 								prev.map((m) =>
 									m.id === assistantMessage.id
@@ -94,20 +96,37 @@ export default function Home() {
 										: m
 								)
 							);
+						} else if (data.type === "status") {
+							setStatus(data.content);
+						} else if (data.type === "warning") {
+							setStatus(`⚠️ ${data.content}`);
+						} else if (data.type === "error") {
+							setStatus("");
+							setMessages((prev) =>
+								prev.map((m) =>
+									m.id === assistantMessage.id
+										? { ...m, role: "error", content: data.content }
+										: m
+								)
+							);
+						} else if (data.type === "done") {
+							setStatus("");
 						}
 					}
 				}
 			}
-		} catch {
+		} catch (err) {
+			const error = err as Error;
 			setMessages((prev) =>
 				prev.map((m) =>
 					m.id === assistantMessage.id
-						? { ...m, content: "Sorry, something went wrong. Please try again." }
+						? { ...m, role: "error", content: `Connection failed: ${error.message}` }
 						: m
 				)
 			);
 		} finally {
 			setIsLoading(false);
+			setStatus("");
 		}
 	};
 
@@ -172,9 +191,14 @@ export default function Home() {
 									className={`max-w-[80%] px-4 py-3 rounded-xl ${
 										message.role === "user"
 											? "bg-[#2563eb] text-white"
+											: message.role === "error"
+											? "bg-red-500/10 border border-red-500/30 text-red-400"
 											: "bg-[#1a1a1a] border border-[#252525]"
 									}`}
 								>
+									{message.role === "error" && (
+										<p className="text-xs text-red-500 mb-1 font-medium">Error</p>
+									)}
 									<p className="text-sm whitespace-pre-wrap leading-relaxed">{message.content || "..."}</p>
 								</div>
 							</div>
@@ -182,6 +206,12 @@ export default function Home() {
 					)}
 					<div ref={messagesEndRef} />
 				</div>
+
+				{status && (
+					<div className="flex-shrink-0 mb-2 px-3 py-2 bg-[#1a1a1a] border border-[#252525] rounded-lg">
+						<p className="text-xs text-[#888]">{status}</p>
+					</div>
+				)}
 
 				<form onSubmit={handleSubmit} className="flex-shrink-0 relative">
 					<input

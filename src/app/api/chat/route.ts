@@ -15,22 +15,38 @@ interface ChatRequest {
   tone: string;
 }
 
-async function getMcpTools(mcpUrl: string) {
+interface McpToolResult {
+  content?: Array<{ type?: string; text?: string }>;
+}
+
+interface McpError {
+  source: "mcp";
+  operation: string;
+  message: string;
+  details?: string;
+}
+
+async function getMcpTools(mcpUrl: string): Promise<{ tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>; error?: McpError }> {
   try {
     const transport = new StreamableHTTPClientTransport(new URL(mcpUrl));
     const client = new Client({ name: "support-chat", version: "1.0.0" });
     await client.connect(transport);
     const { tools } = await client.listTools();
     await client.close();
-    return tools || [];
+    return { tools: tools || [] };
   } catch (error) {
-    console.error("Failed to get MCP tools:", error);
-    return [];
+    const err = error as Error;
+    console.error("[MCP] Failed to get tools:", err.message);
+    return {
+      tools: [],
+      error: {
+        source: "mcp",
+        operation: "listTools",
+        message: "Failed to connect to MCP server",
+        details: err.message,
+      },
+    };
   }
-}
-
-interface McpToolResult {
-  content?: Array<{ type?: string; text?: string }>;
 }
 
 async function callMcpTool(mcpUrl: string, toolName: string, args: Record<string, unknown>): Promise<McpToolResult> {
@@ -42,8 +58,9 @@ async function callMcpTool(mcpUrl: string, toolName: string, args: Record<string
     await client.close();
     return result as McpToolResult;
   } catch (error) {
-    console.error("Failed to call MCP tool:", error);
-    return { content: [{ type: "text", text: `Error calling tool: ${error}` }] };
+    const err = error as Error;
+    console.error(`[MCP] Failed to call tool ${toolName}:`, err.message);
+    return { content: [{ type: "text", text: `MCP tool error (${toolName}): ${err.message}` }] };
   }
 }
 
@@ -67,32 +84,66 @@ function getTonePrompt(tone: string): string {
   return tones[tone] || tones.professional;
 }
 
+function formatError(source: string, message: string, details?: string): string {
+  let formatted = `[${source.toUpperCase()}] ${message}`;
+  if (details) formatted += ` - ${details}`;
+  return formatted;
+}
+
 export async function POST(request: Request) {
   const apiKey = process.env.OPENAI_API_KEY;
   const mcpUrl = process.env.MCP_SERVER_URL;
 
+  const encoder = new TextEncoder();
+
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: "API key not configured" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: "OPENAI_API_KEY environment variable is not set" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 
   if (!mcpUrl) {
-    return new Response(JSON.stringify({ error: "MCP server URL not configured" }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: "MCP_SERVER_URL environment variable is not set" }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
   }
 
-  const { messages, model, tone }: ChatRequest = await request.json();
+  let requestBody: ChatRequest;
+  try {
+    requestBody = await request.json();
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "Invalid JSON in request body" }),
+      { status: 400, headers: { "Content-Type": "application/json" } }
+    );
+  }
 
+  const { messages, model, tone } = requestBody;
   const openai = new OpenAI({ apiKey });
 
-  const mcpTools = await getMcpTools(mcpUrl);
-  const openaiTools = convertMcpToolsToOpenAI(mcpTools);
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (data: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+      };
 
-  const systemPrompt = `You are a helpful customer support agent for TechGear, a company that sells computer products including monitors, printers, keyboards, mice, and other peripherals.
+      try {
+        send({ type: "status", content: "Connecting to MCP server..." });
+        const { tools: mcpTools, error: mcpError } = await getMcpTools(mcpUrl);
+
+        if (mcpError) {
+          send({ type: "warning", content: `MCP: ${mcpError.message} (${mcpError.details}). Proceeding without tools.` });
+        } else if (mcpTools.length === 0) {
+          send({ type: "warning", content: "MCP: No tools available from server." });
+        } else {
+          send({ type: "status", content: `MCP: Connected (${mcpTools.length} tools available)` });
+        }
+
+        const openaiTools = convertMcpToolsToOpenAI(mcpTools);
+
+        const systemPrompt = `You are a helpful customer support agent for TechGear, a company that sells computer products including monitors, printers, keyboards, mice, and other peripherals.
 
 ${getTonePrompt(tone)}
 
@@ -105,21 +156,41 @@ Your job is to help customers with:
 
 Use the available tools to look up information when needed. Always be helpful and provide accurate information.`;
 
-  const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    ...messages.map((m) => ({ role: m.role, content: m.content })),
-  ];
+        const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+          { role: "system", content: systemPrompt },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+        ];
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        const response = await openai.chat.completions.create({
-          model: model || "gpt-4o-mini",
-          messages: allMessages,
-          tools: openaiTools.length > 0 ? openaiTools : undefined,
-          stream: true,
-        });
+        send({ type: "status", content: "Connecting to OpenAI..." });
+
+        let response;
+        try {
+          response = await openai.chat.completions.create({
+            model: model || "gpt-4o-mini",
+            messages: allMessages,
+            tools: openaiTools.length > 0 ? openaiTools : undefined,
+            stream: true,
+          });
+        } catch (openaiError) {
+          const err = openaiError as Error & { status?: number; code?: string };
+          let errorMsg = "OpenAI API error";
+
+          if (err.status === 401 || err.message?.includes("401") || err.message?.includes("Unauthorized")) {
+            errorMsg = "OpenAI: Invalid API key. Please check OPENAI_API_KEY.";
+          } else if (err.status === 429 || err.message?.includes("429")) {
+            errorMsg = "OpenAI: Rate limit exceeded. Please try again later.";
+          } else if (err.status === 500 || err.message?.includes("500")) {
+            errorMsg = "OpenAI: Server error. Please try again.";
+          } else if (err.code === "ENOTFOUND" || err.message?.includes("ENOTFOUND")) {
+            errorMsg = "OpenAI: Network error - cannot reach api.openai.com";
+          } else {
+            errorMsg = `OpenAI: ${err.message || "Unknown error"}`;
+          }
+
+          send({ type: "error", content: errorMsg });
+          controller.close();
+          return;
+        }
 
         let fullContent = "";
         const toolCalls: Array<{ id: string; name: string; arguments: string }> = [];
@@ -129,7 +200,7 @@ Use the available tools to look up information when needed. Always be helpful an
 
           if (delta?.content) {
             fullContent += delta.content;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "content", content: delta.content })}\n\n`));
+            send({ type: "content", content: delta.content });
           }
 
           if (delta?.tool_calls) {
@@ -147,7 +218,8 @@ Use the available tools to look up information when needed. Always be helpful an
         }
 
         if (toolCalls.length > 0) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "status", content: "Using tools..." })}\n\n`));
+          const toolNames = toolCalls.map((tc) => tc.name).join(", ");
+          send({ type: "status", content: `Using tools: ${toolNames}` });
 
           const toolMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
             ...allMessages,
@@ -173,32 +245,51 @@ Use the available tools to look up information when needed. Always be helpful an
                 content: resultText,
               });
             } catch (e) {
+              const err = e as Error;
               toolMessages.push({
                 role: "tool",
                 tool_call_id: tc.id,
-                content: `Error: ${e}`,
+                content: formatError("mcp", `Tool ${tc.name} failed`, err.message),
               });
             }
           }
 
-          const followUp = await openai.chat.completions.create({
-            model: model || "gpt-4o-mini",
-            messages: toolMessages,
-            stream: true,
-          });
+          try {
+            const followUp = await openai.chat.completions.create({
+              model: model || "gpt-4o-mini",
+              messages: toolMessages,
+              stream: true,
+            });
 
-          for await (const chunk of followUp) {
-            const content = chunk.choices[0]?.delta?.content;
-            if (content) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "content", content })}\n\n`));
+            for await (const chunk of followUp) {
+              const content = chunk.choices[0]?.delta?.content;
+              if (content) {
+                send({ type: "content", content });
+              }
             }
+          } catch (followUpError) {
+            const err = followUpError as Error;
+            send({ type: "error", content: formatError("openai", "Follow-up request failed", err.message) });
           }
         }
 
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "done" })}\n\n`));
+        send({ type: "done" });
         controller.close();
       } catch (error) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", content: String(error) })}\n\n`));
+        const err = error as Error;
+        let errorType = "unknown";
+        let errorMsg = err.message || "Unknown error";
+
+        if (errorMsg.includes("fetch") || errorMsg.includes("network") || errorMsg.includes("ENOTFOUND")) {
+          errorType = "network";
+          errorMsg = `Network error: Unable to reach external services. ${errorMsg}`;
+        } else if (errorMsg.includes("JSON")) {
+          errorType = "parse";
+          errorMsg = `Data parsing error: ${errorMsg}`;
+        }
+
+        console.error(`[${errorType.toUpperCase()}] ${errorMsg}`);
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: "error", content: errorMsg, errorType })}\n\n`));
         controller.close();
       }
     },
@@ -212,4 +303,3 @@ Use the available tools to look up information when needed. Always be helpful an
     },
   });
 }
-
