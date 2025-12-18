@@ -3,7 +3,7 @@
 	"version": "0.1.0",
 	"private": true,
 	"scripts": {
-		"dev": "next dev --turbopack",
+		"dev": "PORT=3007 next dev --turbopack",
 		"build": "next build",
 		"start": "next start",
 		"lint": "next lint",
@@ -16,7 +16,9 @@
 		"@opennextjs/cloudflare": "^1.14.4",
 		"next": "15.5.9",
 		"react": "19.1.4",
-		"react-dom": "19.1.4"
+		"react-dom": "19.1.4",
+		"openai": "^4.73.0",
+		"@modelcontextprotocol/sdk": "^1.0.4"
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3",

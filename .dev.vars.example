@@ -1,0 +1,4 @@
+NEXTJS_ENV=development
+OPENAI_API_KEY=your_openai_api_key_here
+MCP_SERVER_URL=https://vipfapwm3x.us-east-1.awsapprunner.com/mcp
+
